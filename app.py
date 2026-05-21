@@ -17,7 +17,6 @@ tickers_input = st.sidebar.text_input("目標策略代號 (最多5檔)", value="
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("大盤基準設定")
-# 【修正】移除 YF 沒支援的 TWII-TR，改用 0050 作為含息總報酬的基準
 benchmark_type = st.sidebar.radio(
     "選擇用來對照的大盤基準：",
     options=["台灣50 (0050.TW) - 含息總報酬基準", "加權指數 (^TWII) - 不含息純走勢"],
@@ -79,7 +78,6 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
             # 1. 抓取大盤數據
             df_bench_raw = yf.download(benchmark_ticker, start=start_date, end=end_date)
             
-            # 【防呆機制】檢查是否成功抓到大盤資料
             if df_bench_raw.empty:
                 st.error(f"⚠️ 無法從 Yahoo Finance 抓取大盤 {benchmark_ticker} 的數據，請確認代碼或日期區間。")
                 st.stop()
@@ -194,7 +192,6 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
             if daily_chart_record['累積投入本金 (基準)'] > 0:
                 chart_data.append(daily_chart_record)
 
-        # 【防呆機制】確保有資料才結算
         if not chart_data:
             st.error("⚠️ 運算結果為空。可能是所選區間內沒有足夠的交易日數據。")
             st.stop()
@@ -238,7 +235,9 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
         st.markdown("---")
         st.subheader("📈 總資產成長曲線對決")
         df_chart = pd.DataFrame(chart_data).set_index('Date')
-        df_chart = df_chart.fillna(method='ffill').fillna(0)
+        
+        # 【關鍵修復】改用 pandas 2.0+ 官方推薦的 ffill() 語法
+        df_chart = df_chart.ffill().fillna(0)
         
         cols_to_plot = [c for c in df_chart.columns if c != '累積投入本金 (基準)']
         st.line_chart(df_chart[cols_to_plot])
