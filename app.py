@@ -2,14 +2,12 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from prophet import Prophet
-import plotly.graph_objs as go
 
 # ==========================================
 # 網頁 UI 與版面設定
 # ==========================================
-st.set_page_config(page_title="台股 ETF 多重擂台賽 & AI 預測", layout="wide")
-st.title("🏆 台股 ETF 策略回測 & AI 趨勢預測")
+st.set_page_config(page_title="台股 ETF 多重擂台賽", layout="wide")
+st.title("🏆 台股 ETF 策略回測")
 st.markdown("同時輸入多檔標的，找出最佳「定期定額 + 季線加碼」策略，並與終極大盤對決。")
 
 # --- 側邊欄：參數輸入區 ---
@@ -22,10 +20,9 @@ st.sidebar.subheader("大盤基準設定")
 benchmark_type = st.sidebar.radio(
     "選擇用來對照的大盤基準：",
     options=["加權指數 (^TWII) - 不含息", "報酬指數 (^TWII-TR) - 含息總報酬", "台灣50 (0050.TW) - 實體ETF"],
-    index=1  # 預設為最嚴格的「含息報酬指數」
+    index=1
 )
 
-# 解析大盤代碼
 if "TWII-TR" in benchmark_type:
     benchmark_ticker = "^TWII-TR"
 elif "TWII" in benchmark_type:
@@ -43,19 +40,14 @@ dca_amount = st.sidebar.number_input("每月定期定額金額 (元)", min_value
 bonus_amount = st.sidebar.number_input("跌破季線加碼金額 (元)", min_value=0, value=20000, step=1000)
 fee_discount = st.sidebar.slider("券商手續費折扣", min_value=0.1, max_value=1.0, value=0.6, step=0.01)
 
-# --- 預測趨勢設定 ---
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔮 未來趨勢預測")
-forecast_days = st.sidebar.slider("預測未來天數", min_value=30, max_value=365, value=180, step=30)
-
 def calculate_fee(cost):
     fee = cost * 0.001425 * fee_discount
     return max(20, np.floor(fee))
 
 # ==========================================
-# 核心回測與預測邏輯
+# 核心回測邏輯
 # ==========================================
-if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
+if st.sidebar.button("🚀 開始擂台賽", type="primary"):
     
     raw_tickers = [t.strip() for t in tickers_input.split(',') if t.strip()]
     if len(raw_tickers) > 5:
@@ -71,8 +63,6 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
         all_dates = None 
 
         try:
-            # 1. 抓取大盤對照組數據
-            # 若為指數 (^TWII, ^TWII-TR)，通常沒有配息資料，這部分會自動避開
             df_bench_raw = yf.download(benchmark_ticker, start=start_date, end=end_date)
             df_bench_raw.index = pd.to_datetime(df_bench_raw.index).tz_localize(None)
             all_dates = df_bench_raw.index
@@ -88,7 +78,6 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
                 'Div': div_bench
             }
 
-            # 2. 抓取所有目標標的數據
             for ticker in raw_tickers:
                 df_raw = yf.download(ticker, start=start_date, end=end_date)
                 if df_raw.empty:
@@ -115,7 +104,6 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
             st.error(f"下載數據時發生錯誤: {e}")
             st.stop()
 
-        # --- 初始化所有帳戶狀態 ---
         accounts = {}
         accounts[benchmark_ticker] = {'cash_pool': 0, 'shares': 0, 'accumulated_principal': 0}
         is_first_day = True
@@ -131,7 +119,6 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
         aligned_df['YearMonth'] = aligned_df.index.to_period('M')
         first_trading_days = aligned_df.groupby('YearMonth').head(1).index
 
-        # --- 3. 多重雙軌回測迴圈 ---
         for date, row in aligned_df.iterrows():
             current_month = row['YearMonth']
             
@@ -141,7 +128,6 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
             if pd.isna(p_bench): continue
 
             if is_first_day:
-                # 指數交易通常不計手續費，實體 ETF (0050) 才計
                 fee = calculate_fee(initial_cash) if benchmark_ticker == "0050.TW" else 0
                 accounts[benchmark_ticker]['shares'] += (initial_cash - fee) / p_bench
                 is_first_day = False
@@ -194,7 +180,6 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
             if daily_chart_record['累積投入本金 (基準)'] > 0:
                 chart_data.append(daily_chart_record)
 
-        # --- 4. 結算與網頁呈現 ---
         total_input = chart_data[-1]['累積投入本金 (基準)']
         
         st.subheader("📊 擂台賽績效排行")
@@ -238,68 +223,3 @@ if st.sidebar.button("🚀 開始擂台賽與預測", type="primary"):
         
         cols_to_plot = [c for c in df_chart.columns if c != '累積投入本金 (基準)']
         st.line_chart(df_chart[cols_to_plot])
-
-        # ==========================================
-        # 🔮 未來趨勢預測模組 (Prophet)
-        # ==========================================
-        st.markdown("---")
-        st.subheader(f"🤖 AI 趨勢預測 (未來 {forecast_days} 天)")
-        st.markdown("使用 Meta Prophet 模型，基於歷史波動預測未來股價走勢區間。(註：僅供參考，非保證獲利)")
-
-        tabs = st.tabs(raw_tickers)
-
-        for i, ticker in enumerate(raw_tickers):
-            with tabs[i]:
-                df_history = market_data[ticker]['Close'].dropna().reset_index()
-                df_history.columns = ['ds', 'y'] 
-
-                if len(df_history) < 100:
-                    st.warning(f"⚠️ {ticker} 歷史數據少於 100 天，預測準確度過低，建議略過。")
-                    continue
-                
-                with st.spinner(f"正在運算 {ticker} 的未來趨勢..."):
-                    m = Prophet(daily_seasonality=False, yearly_seasonality=True, weekly_seasonality=True)
-                    m.fit(df_history)
-
-                    future = m.make_future_dataframe(periods=forecast_days)
-                    forecast = m.predict(future)
-
-                    trace_actual = go.Scatter(
-                        x=df_history['ds'], y=df_history['y'],
-                        mode='lines', name='歷史實際股價',
-                        line=dict(color='black', width=1.5)
-                    )
-                    
-                    trace_pred = go.Scatter(
-                        x=forecast['ds'], y=forecast['yhat'],
-                        mode='lines', name='AI 預測中線',
-                        line=dict(color='blue', width=2, dash='dot')
-                    )
-                    
-                    trace_upper = go.Scatter(
-                        x=forecast['ds'], y=forecast['yhat_upper'],
-                        mode='lines', fill=None, line=dict(color='rgba(0,0,255,0)') , showlegend=False
-                    )
-                    trace_lower = go.Scatter(
-                        x=forecast['ds'], y=forecast['yhat_lower'],
-                        mode='lines', fill='tonexty', fillcolor='rgba(0,0,255,0.2)', 
-                        line=dict(color='rgba(0,0,255,0)'), name='80% 信賴區間'
-                    )
-
-                    layout = go.Layout(
-                        title=f"{ticker} 股價趨勢預測",
-                        xaxis=dict(title="日期"),
-                        yaxis=dict(title="股價 (元)"),
-                        hovermode='x unified'
-                    )
-
-                    fig = go.Figure(data=[trace_actual, trace_upper, trace_lower, trace_pred], layout=layout)
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    last_actual = df_history['y'].iloc[-1]
-                    future_target = forecast['yhat'].iloc[-1]
-                    upside = (future_target - last_actual) / last_actual * 100
-                    
-                    st.write(f"**預測摘要：**")
-                    st.write(f"目前最後收盤價： **${last_actual:.2f}**")
-                    st.write(f"{forecast_days} 天後預測中位數： **${future_target:.2f}** (預期變化： **{upside:.2f}%**)")
