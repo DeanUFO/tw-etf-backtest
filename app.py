@@ -44,6 +44,23 @@ def calculate_fee(cost):
     fee = cost * 0.001425 * fee_discount
     return max(20, np.floor(fee))
 
+# 新增一個穩健的配息抓取函數 (適應 yfinance 新版)
+def get_dividends(ticker_symbol, start_dt, end_dt):
+    try:
+        tkr = yf.Ticker(ticker_symbol)
+        # 使用 actions 抓取能避開 _dividends 屬性錯誤
+        actions = tkr.get_actions() 
+        if actions.empty or 'Dividends' not in actions.columns:
+            return pd.Series(dtype=float)
+        
+        divs = actions['Dividends']
+        divs = divs[divs > 0] # 過濾掉零配息
+        divs.index = pd.to_datetime(divs.index).tz_localize(None)
+        return divs.loc[pd.to_datetime(start_dt):pd.to_datetime(end_dt)]
+    except Exception as e:
+        print(f"無法抓取 {ticker_symbol} 配息: {e}")
+        return pd.Series(dtype=float)
+
 # ==========================================
 # 核心回測邏輯
 # ==========================================
@@ -63,21 +80,21 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
         all_dates = None 
 
         try:
+            # 1. 抓取大盤數據
             df_bench_raw = yf.download(benchmark_ticker, start=start_date, end=end_date)
             df_bench_raw.index = pd.to_datetime(df_bench_raw.index).tz_localize(None)
             all_dates = df_bench_raw.index
             
             bench_close = df_bench_raw['Close'].squeeze()
-            div_bench = yf.Ticker(benchmark_ticker).dividends
-            if not div_bench.empty:
-                div_bench.index = pd.to_datetime(div_bench.index).tz_localize(None)
-                div_bench = div_bench.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
+            # 使用新版函數抓配息
+            div_bench = get_dividends(benchmark_ticker, start_date, end_date)
             
             market_data[benchmark_ticker] = {
                 'Close': bench_close,
                 'Div': div_bench
             }
 
+            # 2. 抓取目標 ETF 數據
             for ticker in raw_tickers:
                 df_raw = yf.download(ticker, start=start_date, end=end_date)
                 if df_raw.empty:
@@ -86,10 +103,8 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
                     
                 df_raw.index = pd.to_datetime(df_raw.index).tz_localize(None)
                 
-                div_raw = yf.Ticker(ticker).dividends
-                if not div_raw.empty:
-                    div_raw.index = pd.to_datetime(div_raw.index).tz_localize(None)
-                    div_raw = div_raw.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
+                # 使用新版函數抓配息
+                div_raw = get_dividends(ticker, start_date, end_date)
                 
                 close_series = df_raw['Close'].squeeze()
                 ma60_series = close_series.rolling(window=60).mean()
@@ -104,6 +119,7 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
             st.error(f"下載數據時發生錯誤: {e}")
             st.stop()
 
+        # 3. 帳戶初始化
         accounts = {}
         accounts[benchmark_ticker] = {'cash_pool': 0, 'shares': 0, 'accumulated_principal': 0}
         is_first_day = True
