@@ -17,15 +17,14 @@ tickers_input = st.sidebar.text_input("目標策略代號 (最多5檔)", value="
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("大盤基準設定")
+# 【修正】移除 YF 沒支援的 TWII-TR，改用 0050 作為含息總報酬的基準
 benchmark_type = st.sidebar.radio(
     "選擇用來對照的大盤基準：",
-    options=["加權指數 (^TWII) - 不含息", "報酬指數 (^TWII-TR) - 含息總報酬", "台灣50 (0050.TW) - 實體ETF"],
-    index=1
+    options=["台灣50 (0050.TW) - 含息總報酬基準", "加權指數 (^TWII) - 不含息純走勢"],
+    index=0
 )
 
-if "TWII-TR" in benchmark_type:
-    benchmark_ticker = "^TWII-TR"
-elif "TWII" in benchmark_type:
+if "TWII" in benchmark_type:
     benchmark_ticker = "^TWII"
 else:
     benchmark_ticker = "0050.TW"
@@ -44,21 +43,18 @@ def calculate_fee(cost):
     fee = cost * 0.001425 * fee_discount
     return max(20, np.floor(fee))
 
-# 新增一個穩健的配息抓取函數 (適應 yfinance 新版)
 def get_dividends(ticker_symbol, start_dt, end_dt):
     try:
         tkr = yf.Ticker(ticker_symbol)
-        # 使用 actions 抓取能避開 _dividends 屬性錯誤
         actions = tkr.get_actions() 
         if actions.empty or 'Dividends' not in actions.columns:
             return pd.Series(dtype=float)
         
         divs = actions['Dividends']
-        divs = divs[divs > 0] # 過濾掉零配息
+        divs = divs[divs > 0]
         divs.index = pd.to_datetime(divs.index).tz_localize(None)
         return divs.loc[pd.to_datetime(start_dt):pd.to_datetime(end_dt)]
     except Exception as e:
-        print(f"無法抓取 {ticker_symbol} 配息: {e}")
         return pd.Series(dtype=float)
 
 # ==========================================
@@ -82,11 +78,16 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
         try:
             # 1. 抓取大盤數據
             df_bench_raw = yf.download(benchmark_ticker, start=start_date, end=end_date)
+            
+            # 【防呆機制】檢查是否成功抓到大盤資料
+            if df_bench_raw.empty:
+                st.error(f"⚠️ 無法從 Yahoo Finance 抓取大盤 {benchmark_ticker} 的數據，請確認代碼或日期區間。")
+                st.stop()
+                
             df_bench_raw.index = pd.to_datetime(df_bench_raw.index).tz_localize(None)
             all_dates = df_bench_raw.index
             
             bench_close = df_bench_raw['Close'].squeeze()
-            # 使用新版函數抓配息
             div_bench = get_dividends(benchmark_ticker, start_date, end_date)
             
             market_data[benchmark_ticker] = {
@@ -98,12 +99,10 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
             for ticker in raw_tickers:
                 df_raw = yf.download(ticker, start=start_date, end=end_date)
                 if df_raw.empty:
-                    st.error(f"⚠️ 找不到 {ticker} 的數據。")
+                    st.error(f"⚠️ 找不到 {ticker} 的數據，請檢查代碼是否正確。")
                     st.stop()
                     
                 df_raw.index = pd.to_datetime(df_raw.index).tz_localize(None)
-                
-                # 使用新版函數抓配息
                 div_raw = get_dividends(ticker, start_date, end_date)
                 
                 close_series = df_raw['Close'].squeeze()
@@ -119,7 +118,6 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
             st.error(f"下載數據時發生錯誤: {e}")
             st.stop()
 
-        # 3. 帳戶初始化
         accounts = {}
         accounts[benchmark_ticker] = {'cash_pool': 0, 'shares': 0, 'accumulated_principal': 0}
         is_first_day = True
@@ -195,6 +193,11 @@ if st.sidebar.button("🚀 開始擂台賽", type="primary"):
 
             if daily_chart_record['累積投入本金 (基準)'] > 0:
                 chart_data.append(daily_chart_record)
+
+        # 【防呆機制】確保有資料才結算
+        if not chart_data:
+            st.error("⚠️ 運算結果為空。可能是所選區間內沒有足夠的交易日數據。")
+            st.stop()
 
         total_input = chart_data[-1]['累積投入本金 (基準)']
         
